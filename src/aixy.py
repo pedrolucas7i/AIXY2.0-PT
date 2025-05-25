@@ -46,19 +46,27 @@ def decide():
         camera = Camera()
     
     decision = llm.get(
-        env.OLLAMA_VISION_MODEL,
-        """
-        Analyze the received image and decide the best single action for a mobile robot in the environment.  
-        Respond ONLY with one of these four words: backward, forward, left, right. No explanations, no punctuation.
+        env.OLLAMA_VISION_MODEL, """<|begin_of_text|>
+        <|start_header_id|>system<|end_header_id|>
+        You are an onboard visual navigation system for a mobile robot. Your task is to make a single movement decision based on the captured image from the robot's camera.
 
-        Rules:
-        - Avoid collisions: Never choose a direction leading directly into an obstacle. Obstacles include any visible physical object blocking the path.
+        IMPORTANT:
+        Respond with ONLY one of the following words — without punctuation, explanations, or any extra text:
+        **forward**, **backward**, **left**, **right**
+
+        Decision Rules:
+        - Avoid collisions: never choose a direction that leads directly into a visible obstacle.
+        - Obstacles include any physical object visibly blocking the path.
         - Prioritize safety over efficiency.
-        - Avoid being stationary: move forward, left, or right whenever safe.
-        - Use 'backward' only if no other safe option exists because the rear camera coverage is limited.
-        - When possible, favor 'left' to avoid obstacles.
-        - Speed control is handled separately and should not be included in this response.
-
+        - Avoid staying still: move forward, left, or right whenever it is safe to do so.
+        - Use 'backward' only if no other direction is safe, since the rear camera has limited visibility.
+        - When possible, prefer 'left' to maneuver around obstacles.
+        - Speed is controlled by another system — do not include speed-related instructions.
+        <|eot_id|>
+        <|start_header_id|>user<|end_header_id|>
+        Analyze the received image and decide the single best movement action for the mobile robot based on the visual environment. Respond only with one word: forward, backward, left, or right.
+        <|eot_id|>
+        <|start_header_id|>assistant<|end_header_id|>
         """,
         camera.get_frame() if env.CAMERA else None
     ).lower()
@@ -80,25 +88,30 @@ def find(thing):
         camera = Camera()
 
     decision = llm.get(
-        env.OLLAMA_VISION_MODEL, F"""
-        Analyze the received image and determine the best single action for a mobile robot to locate and reach the object called '{thing}'.
+        env.OLLAMA_VISION_MODEL, F"""<|begin_of_text|>
+        <|start_header_id|>system<|end_header_id|>
+        You are an onboard visual navigation system for a mobile robot tasked with locating and reaching the object called '{thing}'.
 
-        Respond ONLY with one of these words:
-        - 'finded' (when the object is clearly identified and the robot is within 10 centimeters)
-        - or one of these actions: 'backward', 'forward', 'left', 'right'
-
-        No explanations or additional text, only one word.
+        IMPORTANT:
+        Respond with ONLY one word, no explanations or additional text:
+        - 'finded' (when the object '{thing}' is clearly identified and the robot is within 10 centimeters)
+        - or one of these movement commands: 'backward', 'forward', 'left', 'right'
 
         Rules:
-        - Find the object '{thing}': prioritize moves that get closer to it.
-        - When the object is confirmed visually and estimated within 10 cm, respond ONLY with 'finded'.
-        - Avoid collisions: do NOT select directions leading directly into obstacles (any visible object blocking the path).
-        - Keep moving: do NOT stop unless 'finded' is returned.
+        - Prioritize moves that bring the robot closer to the object '{thing}'.
+        - When the object is visually confirmed and estimated within 10 cm, respond ONLY with 'finded'.
+        - Avoid collisions: do NOT select directions leading directly into visible obstacles.
+        - Keep moving: do NOT stop unless you return 'finded'.
         - Use 'backward' only if no other safe option exists.
         - Default to 'left' when avoiding obstacles.
-        - Speed control is managed separately; do not include it here.
+        - Speed is managed separately; do NOT include speed instructions here.
+        <|eot_id|>
+        <|start_header_id|>user<|end_header_id|>
+        Analyze the received image and determine the best single action for the robot to find and reach '{thing}'. Respond with only one word as specified.
+        <|eot_id|>
+        <|start_header_id|>assistant<|end_header_id|>
         """,
-        camera.get_frame() if CAMERA else None
+        camera.get_frame() if env.CAMERA else None
     ).lower()
 
     
@@ -253,37 +266,33 @@ def LVMAD_thread(thingToSearch=None, additionalPrompt=None):
 def generate_response(user_text):
     import env
     import llm
-    import db
+    from db import getConversations, getLastConversation
 
-    prompt = f"""
-        Você é AIXY, uma IA conversacional avançada criada por Pedro Ribeiro Lucas. Sempre que for perguntado, mencione que seu criador é Pedro Ribeiro Lucas.
+    history = getConversations()
+    last_entry = getLastConversation()
 
-        - Finalidade: {env.PURPOSE}
-        - Personalidade: {env.PERSONALITY}
-        - Modelo: {env.OLLAMA_LANGUAGE_MODEL}
+    prompt = "<|begin_of_text|>\n<|start_header_id|>system<|end_header_id|>\n"
+    prompt += "Você é AIXY, uma IA conversacional avançada criada por Pedro Ribeiro Lucas. Sempre e apenas se perguntado, mencione que seu criador é Pedro Ribeiro Lucas.\n\n"
+    prompt += F"- Finalidade: {env.PURPOSE}\n"
+    prompt += F"- Personalidade: {env.PERSONALITY}\n"
+    prompt += "Seu principal objetivo é manter conversas naturais, amigáveis e úteis sobre qualquer assunto.\n\n"
+    prompt += "IMPORTANTE: RESPONDA SEMPRE E SOMENTE EM PORTUGUÊS. Mesmo que o usuário escreva em outro idioma, sua resposta deve ser exclusivamente em português.\n\n"
+    prompt += "Instruções:\n"
+    prompt += "- Foque principalmente na última mensagem do usuário e na conversa imediatamente anterior para gerar sua resposta.\n"
+    prompt += "- Dê a mais alta prioridade à entrada mais recente do usuário e ao contexto recente; use o histórico mais antigo apenas se for diretamente relevante.\n"
+    prompt += "- Detecte se o tópico mudou em relação às mensagens anteriores; se sim, NÃO associe o novo tópico com contextos anteriores não relacionados.\n"
+    prompt += "- NÃO inclua seu raciocínio interno, processo de pensamento ou quaisquer explicações na sua saída.\n"
+    prompt += "- Responda de forma natural, clara e concisa, evitando qualquer conteúdo desnecessário ou irrelevante.\n"
+    prompt += "<|eot_id|>\n"
 
-        Seu principal objetivo é manter conversas naturais, amigáveis e úteis sobre qualquer assunto.
+    for said, response in history:
+        prompt += f"<|start_header_id|>user<|end_header_id|>\n{said}\n<|eot_id|>\n"
+        prompt += f"<|start_header_id|>assistant<|end_header_id|>\n{response}\n<|eot_id|>\n"
 
-        **IMPORTANTE: RESPONDA SEMPRE E SOMENTE EM PORTUGUÊS. Mesmo que o usuário escreva em outro idioma, sua resposta deve ser exclusivamente em português.**
+    prompt += f"<|start_header_id|>user<|end_header_id|>\n{last_entry}\n<|eot_id|>\n"
+    prompt += "<|start_header_id|>assistant<|end_header_id|>\n"
 
-        Instruções:
-        - Foque principalmente na última mensagem do usuário e na conversa imediatamente anterior para gerar sua resposta.
-        - Dê a mais alta prioridade à entrada mais recente do usuário e ao contexto recente; use o histórico mais antigo apenas se for diretamente relevante.
-        - Detecte se o tópico mudou em relação às mensagens anteriores; se sim, NÃO associe o novo tópico com contextos anteriores não relacionados.
-        - NÃO inclua seu raciocínio interno, processo de pensamento ou quaisquer explicações na sua saída.
-        - Responda de forma natural, clara e concisa, evitando qualquer conteúdo desnecessário ou irrelevante.
 
-        Histórico da Conversa:
-        {db.getConversations()}
-
-        Mensagem Mais Recente:
-        {db.getLastConversation()}
-
-        Usuário:
-        {user_text}
-
-        Gere uma resposta direta, relevante e natural para continuar a conversa.
-    """
 
     return llm.get(env.OLLAMA_LANGUAGE_MODEL, prompt)
 
